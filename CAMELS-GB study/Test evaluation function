@@ -1,0 +1,231 @@
+library(lmtest)
+library(vars)
+library(forecast)
+library(sandwich)
+
+#cluster runner for camels dat, runs on same tests as cluster_runner
+#uses harmonic differencing as described in report
+#outputs pvals for each test
+#requires the camels time series data in wd
+#for more detail on each inter-function, see the simulation function file in simulation study folder
+#note that some functions are a teeny bit different from the cluster_runner, simply different versions, though the output should be identical
+FILE_PAT <- "^CAMELS_GB_hydromet_timeseries_([0-9]+)_.*\\.csv$"
+csvnames <- list.files(pattern = FILE_PAT)
+gauge_ids <- as.numeric(sub(FILE_PAT, "\\1", csvnames))
+stopifnot(length(gauge_ids) > 0, !anyNA(gauge_ids))
+
+
+camel_cluster_runner <- function(tstype,
+                                 B_BOOT = 100, COLS = c(2, 6),
+                                 SHIFT = 1461 ,K_HARM = 2, DATE_COL = 1) {
+  
+  #initialise
+  keep <- na.omit(tstype[, c(DATE_COL, COLS)])
+  dts <- as.Date(keep[[1]])
+  ts_fixed <- keep[, -1, drop = FALSE]
+  colnames(ts_fixed) <- c("X", "Y")
+
+  
+  # na.omit gets rid of interior gaps, so consecutive rows are not always consecutive days for embed
+  n_gaps <- sum(as.numeric(diff(dts)) != 1)
+  
+  #harmonic deseasonalisation 
+  tt <- as.numeric(dts)
+  H  <- do.call(cbind, lapply(1:K_HARM, function(k)
+    cbind(sin(2 * pi * k * tt / 365.25),
+          cos(2 * pi * k * tt / 365.25))))
+  ts_fixed$X <- residuals(lm(ts_fixed$X ~ H))
+  ts_fixed$Y <- residuals(lm(ts_fixed$Y ~ H))
+  
+  N_LENGTH <- nrow(ts_fixed)
+  
+ #aic
+  LAG <- VARselect(ts_fixed, lag.max = 20, type = "const")$selection[1]
+  
+  gc_fstat <- function(X = NULL, Y = NULL, p, delta = NULL, D = NULL) {
+    
+    if (is.null(D)) {
+      y_embed <- embed(Y, p + 1)
+      x_embed <- embed(X, p + 1)
+      D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+    }
+    
+    y_target <- D[, 1]
+    y_lags <- D[, 2:(p + 1), drop = FALSE]
+    x_lags <- D[, (p + 2):(2 * p + 1), drop = FALSE]
+    
+    if (!is.null(delta)) y_target <- drop(y_target - x_lags %*% delta)
+    
+    unrestricted <- lm.fit(x = cbind(1, y_lags, x_lags), y = y_target)
+    restricted   <- lm.fit(x = cbind(1, y_lags),         y = y_target)
+    
+    rss_u <- sum(unrestricted$residuals^2)
+    rss_r <- sum(restricted$residuals^2)
+    n <- length(y_target)
+    
+    ((rss_r - rss_u) / p) / (rss_u / (n - 2 * p - 1))
+  }
+  
+  boot_p <- function(boot_stats, obs_stat, b) (sum(boot_stats >= obs_stat)) / b
+  
+
+  mbb_rows <- function(M, l) {
+    m  <- nrow(M)
+    nb <- ceiling(m / l)
+    starts <- sample.int(m - l + 1L, nb, replace = TRUE)
+    idx <- rep(starts, each = l) + rep(0:(l - 1L), times = nb)
+    M[idx[seq_len(m)], , drop = FALSE]
+  }
+  
+
+  shifted_MBB_p <- function(ts, b, lag, shift) {
+    
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    Y_prime <- c(tail(ts$Y, shift), head(ts$Y, -shift))
+    y_embed <- embed(Y_prime, lag + 1)
+    x_embed <- embed(ts$X,    lag + 1)
+    D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+    m <- nrow(D)
+    
+    mod_null <- lm.fit(x = cbind(1, D[, 2:(lag + 1), drop = FALSE],
+                                 D[, (lag + 2):(2 * lag + 1), drop = FALSE]),
+                       y = D[, 1])
+    delta_hat_Y_prime <- mod_null$coefficients[(lag + 2):(2 * lag + 1)]
+    
+    l <- floor(nrow(ts)^(14/29))
+    
+    boot_stats <- numeric(b)
+    for (i in 1:b) {
+      boot_stats[i] <- gc_fstat(p = lag, delta = delta_hat_Y_prime,
+                                D = mbb_rows(D, l))
+    }
+    
+    boot_p(boot_stats, obs_stat, b)
+  }
+  
+  AR_p <- function(ts, b, lag) {
+    n <- nrow(ts)
+    
+    max_p <- floor(10 * log10(n))
+    
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    
+    mod_null <- ar(ts$Y, method = "ols", aic = TRUE, order.max = max_p)
+    p_opt <- mod_null$order
+    y_mean <- mod_null$x.mean
+    ar_coefs <- mod_null$ar
+    
+    res_null <- na.omit(mod_null$resid)
+    res_null <- res_null - mean(res_null)
+    
+    boot_stats <- numeric(b)
+    
+    for (i in 1:b) {
+      res_boot <- sample(res_null, size = n - p_opt, replace = TRUE)
+      
+      if (p_opt == 0) {
+        boot_df <- data.frame(X = ts$X, Y = res_boot + y_mean)
+      } else {
+        Y_boot_core <- stats::filter(res_boot, filter = ar_coefs,
+                                     method = "recursive",
+                                     init = rev(ts$Y[1:p_opt] - y_mean))
+        boot_df <- data.frame(
+          X = ts$X,
+          Y = c(ts$Y[1:p_opt], as.numeric(Y_boot_core) + y_mean))
+      }
+      boot_stats[i] <- gc_fstat(boot_df$X, boot_df$Y, lag)
+    }
+    
+    boot_p(boot_stats, obs_stat, b)
+  }
+  
+  robust_gc_p <- function(X, Y, p) {
+    y_embed <- embed(Y, p + 1)
+    x_embed <- embed(X, p + 1)
+    
+    y_target <- y_embed[, 1]
+    y_lags <- y_embed[, -1, drop = FALSE]
+    x_lags <- x_embed[, -1, drop = FALSE]
+    
+    mod_u <- lm(y_target ~ y_lags + x_lags)
+    mod_r <- lm(y_target ~ y_lags)
+    
+    wald_res <- lmtest::waldtest(mod_u, mod_r,
+                                 vcov = sandwich::vcovHC(mod_u, type = "HC3"))
+    wald_res$`Pr(>F)`[2]
+  }
+  
+  ty_p <- function(X, Y, p) {
+    d_max <- max(forecast::ndiffs(X), forecast::ndiffs(Y))
+    
+    y_embed <- embed(Y, p + d_max + 1)
+    x_embed <- embed(X, p + d_max + 1)
+    
+    y_target <- y_embed[, 1]
+    y_lags   <- y_embed[, -1, drop = FALSE]
+    x_lags   <- x_embed[, -1, drop = FALSE]
+    
+    unrestricted <- lm.fit(x = cbind(1, y_lags, x_lags), y = y_target)
+    
+    if (d_max > 0) {
+      x_lags_restricted <- x_lags[, (p + 1):ncol(x_lags), drop = FALSE]
+      restricted <- lm.fit(x = cbind(1, y_lags, x_lags_restricted), y = y_target)
+    } else {
+      restricted <- lm.fit(x = cbind(1, y_lags), y = y_target)
+    }
+    
+    rss_u <- sum(unrestricted$residuals^2)
+    rss_r <- sum(restricted$residuals^2)
+    n <- length(y_target)
+    k_u <- 1 + 2 * (p + d_max)
+    
+    fstat <- ((rss_r - rss_u) / p) / (rss_u / (n - k_u))
+    
+    pf(fstat, p, n - k_u, lower.tail = FALSE)
+  }
+  
+ #run
+  set.seed(1234)
+  
+  dat <- ts_fixed
+  dat_rev <- data.frame(X = dat$Y, Y = dat$X)
+  
+  res <- list(
+    "F"  = c(lmtest::grangertest(Y ~ X, order = LAG, data = dat)$`Pr(>F)`[2],
+                   lmtest::grangertest(Y ~ X, order = LAG, data = dat_rev)$`Pr(>F)`[2]),
+    "SMBB" = c(shifted_MBB_p(dat,     b = B_BOOT, lag = LAG, shift = SHIFT),
+                   shifted_MBB_p(dat_rev, b = B_BOOT, lag = LAG, shift = SHIFT)),
+    "AR sieve" = c(AR_p(dat,     b = B_BOOT, lag = LAG),
+                   AR_p(dat_rev, b = B_BOOT, lag = LAG)),
+    "R.Wald" = c(robust_gc_p(dat$X, dat$Y, LAG),
+                   robust_gc_p(dat_rev$X, dat_rev$Y, LAG)),
+    "TY" = c(ty_p(dat$X, dat$Y, p = LAG),
+                   ty_p(dat$Y, dat$X, p = LAG))
+  )
+  
+  outputtab <- as.data.frame(do.call(rbind, res))
+  colnames(outputtab) <- c("X_to_Y", "Y_to_X")
+  
+  attr(outputtab, "lag") <- LAG
+  attr(outputtab, "shift") <- SHIFT
+  attr(outputtab, "n") <- N_LENGTH
+  attr(outputtab, "n_gaps") <- n_gaps
+  outputtab
+}
+
+
+
+TESTS <- c("F", "SMBB", "AR sieve", "R.Wald", "TY")
+CN    <- paste0(rep(TESTS, each = 2), c("_X_to_Y", "_Y_to_X"))
+
+pval_matrix <- matrix(NA_real_, nrow = length(csvnames), ncol = length(CN),
+                      dimnames = list(gauge_ids, CN))
+
+for (i in seq_along(csvnames)) {
+  out <- try(camel_cluster_runner(read.csv(csvnames[i])), silent = TRUE)
+  if (!inherits(out, "try-error"))
+    pval_matrix[i, ] <- as.vector(t(as.matrix(out[TESTS, ])))
+}
+
+saveRDS(pval_matrix, "pval_matrix.rds")
+write.csv(pval_matrix, "pval_matrix.csv")

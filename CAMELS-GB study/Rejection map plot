@@ -1,0 +1,70 @@
+library(ggplot2)
+library(rnaturalearth)
+library(sf)
+
+ALPHA <- 0.05
+pval_matrix <- read.csv("pval_matrix.csv", row.names = 1, check.names = FALSE)
+ids <- as.numeric(rownames(pval_matrix))
+if (is.null(ids)) {
+  pm_df <- as.data.frame(pval_matrix, stringsAsFactors = FALSE)
+  for (j in seq_along(pm_df)) {
+    ids <- extract_ids(pm_df[[j]])
+    if (!is.null(ids)) break
+  }
+}
+if (is.null(ids) && exists("csvnames")) ids <- extract_ids(basename(csvnames))
+if (is.null(ids)) stop("could not find gauge ids")
+stopifnot(length(ids) == nrow(pval_matrix))
+rownames(pval_matrix) <- ids
+
+topo_file <- "CAMELS_GB_topographic_attributes.csv"
+topo <- read.delim(topo_file, stringsAsFactors = FALSE)
+if (ncol(topo) == 1) topo <- read.csv(topo_file, stringsAsFactors = FALSE)
+names(topo) <- trimws(sub("^\ufeff", "", names(topo)))
+
+idx <- match(ids, as.numeric(trimws(topo$gauge_id)))
+if (anyNA(idx))
+  warning(sum(is.na(idx)), " gauge(s) missing: ",
+          paste(ids[is.na(idx)], collapse = ", "))
+#TO VIEW OTHER TESTS ON THE MAP CHANGE THE FOLLOWING LINE
+p_yx <- as.numeric(pval_matrix[, "SMBB_Y_to_X"])
+
+stations_all <- data.frame(
+  id     = ids,
+  lon    = topo$gauge_lon[idx],
+  lat    = topo$gauge_lat[idx],
+  p      = p_yx,
+  stringsAsFactors = FALSE
+)
+stations_all <- stations_all[complete.cases(stations_all$lon,
+                                            stations_all$lat,
+                                            stations_all$p), ]
+stations_all$status <- ifelse(stations_all$p < ALPHA, "Rejected", "Not rejected")
+
+cat(sum(stations_all$status == "Not rejected"), "of", nrow(stations_all),
+    "stations not rejected (Y -> X)\n")
+
+land <- ne_download(scale = 10, type = "land", category = "physical",
+                    returnclass = "sf")
+
+uk_base <- function() {
+  ggplot() +
+    geom_sf(data = land, fill = "grey96", colour = "grey40", linewidth = 0.3) +
+    coord_sf(xlim = c(-10.5, 3), ylim = c(49.95, 59.5), expand = FALSE) +
+    labs(x = "Longitude", y = "Latitude") +
+    theme_bw(base_size = 9) +
+    theme(legend.title = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "bottom")
+}
+
+uk_base() +
+  geom_point(data = stations_all, aes(lon, lat, colour = status), size = 0.7)
+
+#fdr - benjamini-hochberg
+
+stations_all$p_bh <- p.adjust(stations_all$p, method = "BH")   # for comparison
+
+stations_all$status_fdr <- ifelse(stations_all$p_bh < ALPHA, "Rejected", "Not rejected")
+sum(stations_all$status_fdr == "Not rejected")
+

@@ -1,0 +1,152 @@
+library(parallel)
+
+gc_fstat <- function(X = NULL, Y = NULL, p, delta = NULL, D = NULL) {
+  
+  if (is.null(D)) {
+    y_embed <- embed(Y, p + 1)
+    x_embed <- embed(X, p + 1)
+    D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  }
+  
+  y_target <- D[, 1]
+  y_lags   <- D[, 2:(p + 1), drop = FALSE]
+  x_lags   <- D[, (p + 2):(2 * p + 1), drop = FALSE]
+  
+  if (!is.null(delta)) {
+    y_target <- drop(y_target - x_lags %*% delta)
+  }
+  
+  unrestricted <- lm.fit(x = cbind(1, y_lags, x_lags), y = y_target)
+  restricted   <- lm.fit(x = cbind(1, y_lags),         y = y_target)
+  
+  rss_u <- sum(unrestricted$residuals^2)
+  rss_r <- sum(restricted$residuals^2)
+  
+  n <- length(y_target)
+  
+  ((rss_r - rss_u) / p) / (rss_u / (n - 2 * p - 1))
+}
+
+mbb_rows <- function(M, l) {
+  m  <- nrow(M)
+  nb <- ceiling(m / l)
+  starts <- sample.int(m - l + 1L, nb, replace = TRUE)
+  idx <- rep(starts, each = l) + rep(0:(l - 1L), times = nb)
+  M[idx[seq_len(m)], , drop = FALSE]
+}
+
+shifted_MBB_p <- function(ts, b, lag, shift, l) {
+  obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+  
+  Y_prime <- c(tail(ts$Y, shift), head(ts$Y, -shift))
+  
+  y_embed <- embed(Y_prime, lag + 1)
+  x_embed <- embed(ts$X, lag + 1)
+  D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  
+  mod_null <- lm.fit(x = cbind(1, D[, 2:(lag + 1), drop = FALSE],
+                               D[, (lag + 2):(2 * lag + 1), drop = FALSE]),
+                     y = D[, 1])
+  delta_hat_Y_prime <- mod_null$coefficients[(lag + 2):(2 * lag + 1)]
+  
+  boot_adj <- numeric(b); boot_una <- numeric(b)
+  for (i in 1:b) {
+    Db <- mbb_rows(D, l)
+    boot_adj[i] <- gc_fstat(p = lag, delta = delta_hat_Y_prime, D = Db)
+    boot_una[i] <- gc_fstat(p = lag, delta = NULL,              D = Db)
+  }
+  
+  c(adjusted   = mean(boot_adj >= obs_stat),
+    unadjusted = mean(boot_una >= obs_stat))
+}
+
+simulate_var2 <- function(n, p, phi_diag = 0.5, phi_YtoX = 0.2,
+                          sigma_x = 1, sigma_y = 1, rho = 0,
+                          burn = 500) {
+  
+  A <- lapply(1:p, function(k) {
+    d <- phi_diag / p
+    yx <- phi_YtoX / p
+    matrix(c(d,  0,
+             yx, d),
+           nrow = 2, byrow = TRUE)
+  })
+  for (k in 1:p) A[[k]][2, 1] <- 0   # drop this loop to add causality back
+  
+  total <- n + burn
+  Sigma <- matrix(c(sigma_x^2, rho * sigma_x * sigma_y,
+                    rho * sigma_x * sigma_y, sigma_y^2), 2, 2)
+  L <- chol(Sigma)
+  
+  eps <- matrix(rnorm(total * 2), ncol = 2) %*% L
+  
+  Z <- matrix(0, nrow = total, ncol = 2)
+  for (t in (p + 1):total) {
+    val <- eps[t, ]
+    for (k in 1:p) {
+      val <- val + as.numeric(A[[k]] %*% Z[t - k, ])
+    }
+    Z[t, ] <- val
+  }
+  
+  Z <- Z[(burn + 1):total, ]
+  out <- as.data.frame(Z)
+  colnames(out) <- c("X", "Y")
+  out
+}
+
+run_size_study_cell <- function(cl, p, l, s, n, reps, b, alpha = 0.05, seed) {
+  
+  clusterSetRNGStream(cl, iseed = seed)
+  clusterExport(cl, c("p", "l", "s", "n", "b"), envir = environment())
+  
+  results <- parLapply(cl, 1:reps, function(i) {
+    dat <- simulate_var2(n = n, p = p)
+    pv <- shifted_MBB_p(dat, b, p, s, l)
+    c(rej_adj   = as.numeric(pv["adjusted"]   < alpha),
+      rej_unadj = as.numeric(pv["unadjusted"] < alpha))
+  })
+  
+  results_mat <- do.call(rbind, results)
+  
+  data.frame(
+    lag_p           = p,
+    block_l         = l,
+    shift_s         = s,
+    n               = n,
+    reps            = reps,
+    b               = b,
+    size_adjusted   = mean(results_mat[, "rej_adj"]),
+    size_unadjusted = mean(results_mat[, "rej_unadj"])
+  )
+}
+
+n <- 1000
+
+p_vals <- c(1, 3, 5, 7)
+l_vals <- c(8, 20, 28, 50)
+s_vals <- c(8, 25, 100, 250)
+
+grid <- expand.grid(p = p_vals, l = l_vals, s = s_vals, KEEP.OUT.ATTRS = FALSE)
+grid <- subset(grid, p < l & p < s)
+
+REPS <- 500
+BOOT <- 200
+SEED_BASE <- 1234
+out_path <- "grid_search_results.csv"
+
+cl <- makeCluster(max(1, detectCores() - 1))
+clusterExport(cl, c("gc_fstat", "mbb_rows", "shifted_MBB_p", "simulate_var2"))
+
+results <- do.call(rbind, lapply(seq_len(nrow(grid)), function(i) {
+  row <- grid[i, ]
+  run_size_study_cell(
+    cl, p = row$p, l = row$l, s = row$s,
+    n = n, reps = REPS, b = BOOT,
+    seed = SEED_BASE + row$p * 1000 + row$l * 10 + row$s
+  )
+}))
+
+stopCluster(cl)
+
+write.csv(results, out_path, row.names = FALSE)

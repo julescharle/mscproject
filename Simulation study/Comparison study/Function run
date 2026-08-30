@@ -1,0 +1,198 @@
+library(lmtest)
+library(doParallel)
+library(parallel)
+library(sandwich)
+
+#function run used in report, needs cluster_runner from Simulation_function.R
+
+n_sim <- 5000
+b_boot <- 500
+n_length <- 1000
+lag <- 3
+shift <- 100
+
+wn_run <- cluster_runner(
+  tstype = "WN", 
+  MBB_TEST = F,
+  N_SIM = n_sim,        
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,
+  LAG = lag,           
+  SHIFT = shift,
+  LAG_SELECT = F
+)
+
+wn_params <- c(2,10)
+wnheavy_run <- cluster_runner(
+  tstype = "WNheavy",
+  tsparams = wn_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  B_BOOT = b_boot,
+  LAG_SELECT = F,
+  LAG = lag,
+  SHIFT = shift
+)
+
+wntwo_params <- c(0.1,3)
+wntwo_run <- cluster_runner(
+  tstype = "WNTWO",
+  tsparams = wntwo_params,
+  MBB_TEST = F,
+  LAG_SELECT = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  B_BOOT = b_boot,
+  LAG = lag,
+  SHIFT = shift
+)
+
+
+wntwo_params <- c(0.1, 2, 10, 3)
+wntwoheavy_run <- cluster_runner(
+  tstype = "WNTWOheavy",
+  tsparams = wntwo_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  LAG_SELECT = F,
+  B_BOOT = b_boot,
+  LAG = lag,
+  SHIFT = shift
+)
+
+garch_params <- c(0.1, 0.2, 0.7, 0.6, 0.4, 0.5, 3)
+garch_run <- cluster_runner(
+  tstype = "GARCH", 
+  tsparams = garch_params,
+  MBB_TEST = F, 
+  N_SIM = n_sim,        
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,       
+  LAG_SELECT = F,
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+garch_params <- c(0.1, 0.2, 0.7, 0.6, 0.4, 0.5, 2.1, 10, 3)
+garchheavy_run <- cluster_runner(
+  tstype = "GARCHheavy", 
+  tsparams = garch_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,        
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,      
+  LAG_SELECT = F,
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+ma_params <- c(0.5, 0.5, 0.1, 3)
+ma_run <- cluster_runner(
+  tstype = "MA", 
+  tsparams = ma_params,
+  MBB_TEST = F, 
+  N_SIM = n_sim,        
+  N_LENGTH = n_length,    
+  LAG_SELECT = F,
+  B_BOOT = b_boot,       
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+ma_params <- c(0.5, 0.5, 2, 10, 0.1, 3)
+maheavy_run <- cluster_runner(
+  tstype = "MAheavy", 
+  tsparams = ma_params,
+  MBB_TEST = F, 
+  N_SIM = n_sim,        
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,       
+  LAG_SELECT = F,
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+
+var_params <- c(0.5, 0.5, 0.1, 3)
+var_run <- cluster_runner(
+  tstype = "VAR", 
+  tsparams = var_params,
+  MBB_TEST = F, 
+  N_SIM = n_sim,        
+  LAG_SELECT = F,
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,       
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+var_params <- c(0.5, 0.5, 2, 10, 0.1, 3)
+varheavy_run <- cluster_runner(
+  tstype = "VARheavy", 
+  tsparams = var_params,
+  MBB_TEST = F, 
+  N_SIM = n_sim,        
+  LAG_SELECT = F,
+  N_LENGTH = n_length,    
+  B_BOOT = b_boot,       
+  LAG = lag,           
+  SHIFT = shift         
+)
+
+garchvol_params <- c(0.1, 0.2, 0.7, 0.6, 0.4, 1, 3)
+garchvol_run <- cluster_runner(
+  tstype = "GARCHVOL",
+  tsparams = garchvol_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  LAG_SELECT = F,
+  B_BOOT = b_boot,
+  LAG = lag,
+  SHIFT = shift
+)
+
+
+
+garchvol_params <- c(0.1, 0.2, 0.7, 0.6, 0.4, 1, 5, 10, 3)
+garchvolheavy_run <- cluster_runner(
+  tstype = "GARCHVOLheavy",
+  tsparams = garchvol_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  B_BOOT = b_boot,
+  LAG_SELECT = F,
+  LAG = lag,
+  SHIFT = shift
+)
+
+
+wnsq_params <- c(1, 3)
+wnsq_run <- cluster_runner(
+  tstype = "WNSQ",
+  tsparams = wnsq_params,
+  LAG_SELECT = F,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  B_BOOT = b_boot,
+  LAG = lag,
+  SHIFT = shift
+)
+
+wnsq_params <- c(1, 5, 10, 3)
+wnsqheavy_run <- cluster_runner(
+  tstype = "WNSQheavy",
+  tsparams = wnsq_params,
+  MBB_TEST = F,
+  N_SIM = n_sim,
+  N_LENGTH = n_length,
+  LAG_SELECT = F,
+  B_BOOT = b_boot,
+  LAG = lag,
+  SHIFT = shift
+)
+

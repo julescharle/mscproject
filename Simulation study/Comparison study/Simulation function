@@ -1,0 +1,811 @@
+library(lmtest)
+library(doParallel)
+library(parallel)
+
+# Parallel compute for running GC tests
+# Inputs
+# tstype: the user can choose from a pre-defined data generating process:
+# Choosing a pre-defined data generating process.
+# ---------------------------------------------------------
+# "WN" - bivariate white noise sequence
+# Ground truth: no causality
+# std normal iid noise
+# no need to define tsparams
+# ---------------------------------------------------------
+# "WNheavy" - bivariate white noise sequence
+# Ground truth: no causality
+# t-distributed iid noise, tsparams length 2:
+# df_x, df_y
+# ---------------------------------------------------------
+# "WNTWO" - bivariate white noise sequence with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# std normal iid noise, tsparams length 2:
+# theta, delay
+# ---------------------------------------------------------
+# "WNTWOheavy" - bivariate white noise sequence with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# t-distributed iid noise, tsparams length 4:
+# theta, df_x, df_y, delay
+# ---------------------------------------------------------
+# "GARCH" - bivariate GARCH(1,1) with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# std normal etas, tsparams length 7:
+# omega, alpha, beta, theta_x, theta_y, delta, delay
+# ---------------------------------------------------------
+# "GARCHheavy" bivariate GARCH(1,1) with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# normalised t-distributed etas with d.f. =  df, tsparams length 9:
+# omega, alpha, beta, theta_x, theta_y, delta, df_x, df_y delay
+# ---------------------------------------------------------
+# "MA" bivariate MA(1) with nonlinear causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# std normal iid noise, tsparams length 4:
+# theta_x, theta_y, delta, delay
+# ---------------------------------------------------------
+# "MAheavy" bivariate MA(1) with nonlinear interaction term
+# Ground truth: X causes Y, Y does not cause X
+# t-distributed iid noise, tsparams length 6:
+# theta_x, theta_y, df_x, df_y, delta, delay
+# ---------------------------------------------------------
+# "VAR" bivariate VAR(1) system with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# std normal iid noise, tsparams length 4:
+# phi_x, phi_y, delta, delay
+# ---------------------------------------------------------
+# "VARheavy" bivariate VAR(1) system with causal interaction term
+# Ground truth: X causes Y, Y does not cause X
+# t-distributed iid noise, tsparams length 6:
+# phi_x, phi_y, df_x, df_y, delta, delay
+# ---------------------------------------------------------
+# "GARCHVOL" - bivariate MA(1)-GARCH(1,1), interaction in the VARIANCE of Y
+# Ground truth: X causes Y, Y does not cause X 
+# std normal etas, tsparams length 7:
+# omega, alpha, beta, theta_x, theta_y, delta, delay
+# ---------------------------------------------------------
+# "GARCHVOLheavy" - as above with normalised t etas, tsparams length 9:
+# omega, alpha, beta, theta_x, theta_y, delta, df_x, df_y, delay
+# ---------------------------------------------------------
+# "WNSQ" - white noise with squared causal interaction term
+# Ground truth: X causes Y 
+# std normal iid noise, tsparams length 2:
+# delta, delay
+# ---------------------------------------------------------
+# "WNSQheavy" - as above, t noise normalised
+# tsparams length 4:
+# delta, df_x, df_y, delay
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+# Test choices:
+# SMBB_ROW_CEN is rows + centred "smbb" (SMBB_1 in report)
+# SMBB_ROW_UNC is rows + uncentred "smbbu" (SMBB_2 in report)
+# SMBB_RAW_CEN is raw  + centred "smbbraw" (SMBB_3 in report)
+# SMBB_RAW_UNC is raw  + uncentred "smbbrawu" (SMBB_4 in report)
+# SHIFTED_TEST runs all smbbs
+# MBB_TEST is non-shifted (standard) MBB
+# AR_TEST is AR sieve bootstrap residual test
+# ASYMPTOTIC_TEST is classic F-test
+# ROBUST_TEST is Wald test with heteroscedsatic-robust estimator (HC3)
+# TY_TEST is Toda-Yamamoto test
+# Parameters:
+# N_SIM is number of replications. N in report
+# N_LENGTH length of time series generated. n in report
+# B_BOOT bootstrap repetitions. B in report
+# LAG lag for GC tests (used only when LAG_SELECT = FALSE). p in report
+# LAG_SELECT if TRUE, lag is re-chosen per replication by VARselect and the lag argument is ignored and the lag used is returned
+# SHIFT is shift parameter for smbb
+# BLOCK is the moving block length
+# Returns a list:
+#   $table  rejection rates at the 5% level (the old return value)
+#   $obs    observed statistic per replication, per test and direction
+#   $boot   N_SIM x B_BOOT matrix of bootstrap statistics, per bootstrap test and direction (NULL for tests with no bootstrap distribution)
+#   $lag    lag used in each replication
+#   $params the parameters the run was made with
+
+
+cluster_runner <- function(tstype, tsparams = 0,
+                           SHIFTED_TEST = T,
+                           SMBB_ROW_CEN = SHIFTED_TEST,
+                           SMBB_ROW_UNC = SHIFTED_TEST,
+                           SMBB_RAW_CEN = SHIFTED_TEST,
+                           SMBB_RAW_UNC = SHIFTED_TEST,
+                           AR_TEST = T,
+                           MBB_TEST = T, ASYMPTOTIC_TEST = T, ROBUST_TEST = T,
+                           TY_TEST = T,
+                           N_SIM = 100, N_LENGTH = 1000, B_BOOT = 100,
+                           LAG = 1, LAG_SELECT = F, SHIFT = 2,
+                           BLOCK = floor(N_LENGTH^(14/29))){
+  
+    SMBB_ROW_CEN <- isTRUE(SMBB_ROW_CEN)
+  SMBB_ROW_UNC <- isTRUE(SMBB_ROW_UNC)
+  SMBB_RAW_CEN <- isTRUE(SMBB_RAW_CEN)
+  SMBB_RAW_UNC <- isTRUE(SMBB_RAW_UNC)
+  
+  
+  ##### ------ Choosing data generating process ------ #####
+  # Preset data generating processes 
+  if (tstype == "WN"){
+    ts_generate <- function(n, tsparams){
+      X <- rnorm(n); Y <- rnorm(n)
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "WNheavy"){
+    ts_generate <- function(n, tsparams){
+      df_x <- tsparams[1]; df_y <- tsparams[2]
+      X <- rt(n, df_x); Y <- rt(n, df_y)
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "WNTWO"){
+    ts_generate <- function(n, tsparams){
+      theta <- tsparams[1]
+      delay <- tsparams[2]
+      X <- rnorm(n)
+      Y <- rnorm(n)
+      for (i in (delay + 1):n){
+        Y[i] <- Y[i] + theta * X[i - delay]
+      }
+      return(data.frame(X, Y))
+    }
+  }
+  
+  if (tstype == "WNTWOheavy"){
+    ts_generate <- function(n, tsparams){
+      theta <- tsparams[1]; df_x <- tsparams[2]
+      df_y <- tsparams[3]; delay <- tsparams[4]
+      X <- rt(n, df_x); Y <- rt(n, df_y)
+      for (i in (delay + 1):n){
+        Y[i] <- Y[i] + theta * X[i - delay]
+      }
+      return(data.frame(X, Y))
+    }
+  }
+  
+  if (tstype == "GARCH"){
+    ts_generate <- function(n, tsparams){
+      #initialise
+      omega <- tsparams[1] ; alpha <- tsparams[2]; beta <- tsparams[3]
+      theta_x <- tsparams[4]; theta_y <- tsparams[5]; delta <- tsparams[6]
+      delay <- tsparams[7]
+      
+      eta_x <- rnorm(n); eta_y <- rnorm(n)
+      sig_x <- numeric(n); sig_y <- numeric(n) # here sig actually represents sigma squared
+      eps_x <- numeric(n); eps_y <- numeric(n)
+      X <- numeric(n); Y <- numeric(n)
+      
+      sig_x[1] <- sig_y[1] <- omega / (1 - alpha - beta) #this is the long run expected variance of GARCH(1,1), so initalising here seems right
+      eps_x[1] <- sqrt(sig_x[1]) * eta_x[1]
+      eps_y[1] <- sqrt(sig_y[1]) * eta_y[1]
+      X[1] <- eps_x[1]
+      Y[1] <- eps_y[1]
+      
+      for (i in 2:n){
+        sig_x[i] <- omega + alpha * eps_x[i-1]^2 + beta * sig_x[i-1]
+        sig_y[i] <- omega + alpha * eps_y[i-1]^2 + beta * sig_y[i-1]
+        eps_x[i] <- sqrt(sig_x[i]) * eta_x[i]
+        eps_y[i] <- sqrt(sig_y[i]) * eta_y[i]
+        X[i] <- eps_x[i] + theta_x * eps_x[i-1]
+        Y[i] <- eps_y[i] + theta_y * eps_y[i-1]
+      }
+      for (i in (delay+1):n){ #we can just add the causal part on at the end since y doesn't use past y
+        Y[i] <- Y[i] + delta * X[i-delay]
+      }
+      
+      return(data.frame(X, Y))
+      
+    }
+  }
+  
+  if (tstype == "GARCHheavy"){
+    ts_generate <- function(n, tsparams){
+      #initialise
+      omega <- tsparams[1] ; alpha <- tsparams[2]; beta <- tsparams[3]
+      theta_x <- tsparams[4]; theta_y <- tsparams[5]; delta <- tsparams[6]
+      df_x <- tsparams[7]; df_y <- tsparams[8]; delay <- tsparams[9]; 
+      
+      scale_x <- sqrt((df_x - 2) / df_x) #we need to scale to ensure the variance of etas is 1 to ensure a valid GARCH process
+      eta_x <- rt(n, df_x) * scale_x
+      scale_y <- sqrt((df_y - 2) / df_y)
+      eta_y <- rt(n, df_y) * scale_y
+      sig_x <- numeric(n); sig_y <- numeric(n) # here sig actually represents sigma squared
+      eps_x <- numeric(n); eps_y <- numeric(n)
+      X <- numeric(n); Y <- numeric(n)
+      
+      sig_x[1] <- sig_y[1] <- omega / (1 - alpha - beta) #this is the long run expected variance of GARCH(1,1), so initalising here seems right
+      eps_x[1] <- sqrt(sig_x[1]) * eta_x[1]
+      eps_y[1] <- sqrt(sig_y[1]) * eta_y[1]
+      X[1] <- eps_x[1]
+      Y[1] <- eps_y[1]
+      
+      for (i in 2:n){
+        sig_x[i] <- omega + alpha * eps_x[i-1]^2 + beta * sig_x[i-1]
+        sig_y[i] <- omega + alpha * eps_y[i-1]^2 + beta * sig_y[i-1]
+        eps_x[i] <- sqrt(sig_x[i]) * eta_x[i]
+        eps_y[i] <- sqrt(sig_y[i]) * eta_y[i]
+        X[i] <- eps_x[i] + theta_x * eps_x[i-1]
+        Y[i] <- eps_y[i] + theta_y * eps_y[i-1]
+      }
+      for (i in (delay+1):n){ #we can just add the causal part on at the end since y doesn't use past y
+        Y[i] <- Y[i] + delta * X[i-delay]
+      }
+      
+      return(data.frame(X, Y))
+      
+    }
+  }
+  
+  if (tstype == "MA"){
+    ts_generate <- function(n, tsparams){
+      theta_x <- tsparams[1]; theta_y <- tsparams[2]; delta <- tsparams[3]; delay <- tsparams[4]
+      
+      epsilon_x <- rnorm(n); X <- numeric(n); X[1] <- epsilon_x[1]
+      epsilon_y <- rnorm(n); Y <- numeric(n); Y[1] <- epsilon_y[1]
+      
+      for (i in 2:n){
+        X[i] <- theta_x * epsilon_x[i-1] + epsilon_x[i]
+        Y[i] <- theta_y * epsilon_y[i-1] + epsilon_y[i]
+      }
+      
+      for (i in (delay+1):n){
+        Y[i] <- Y[i] + delta * sign(X[i-delay]) * abs(X[i-delay])^(3/4)
+      }
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "MAheavy"){
+    ts_generate <- function(n, tsparams){
+      theta_x <- tsparams[1]; theta_y <- tsparams[2]; df_x <- tsparams[3]
+      df_y <- tsparams[4]; delta <- tsparams[5]; delay <- tsparams[6]
+      
+      epsilon_x <- rt(n,df_x); X <- numeric(n); X[1] <- epsilon_x[1]
+      epsilon_y <- rt(n,df_y); Y <- numeric(n); Y[1] <- epsilon_y[1]
+      
+      for (i in 2:n){
+        X[i] <- theta_x * epsilon_x[i-1] + epsilon_x[i]
+        Y[i] <- theta_y * epsilon_y[i-1] + epsilon_y[i]
+      }
+      
+      for (i in (delay+1):n){
+        Y[i] <- Y[i] + delta * sign(X[i-delay]) * abs(X[i-delay])^(3/4)
+      }
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "VAR"){
+    ts_generate <- function(n, tsparams){
+      phi_x <- tsparams[1]; phi_y <- tsparams[2];
+      delta <- tsparams[3]; delay <- tsparams[4]
+      epsilon_x <- rnorm(n); X <- numeric(n); X[1] <- epsilon_x[1]
+      epsilon_y <- rnorm(n); Y <- numeric(n); Y[1] <- epsilon_y[1]
+      
+      for (i in 2:n){
+        X[i] <- phi_x * X[i-1] + epsilon_x[i]
+        
+        Y[i] <- phi_y * Y[i-1] + epsilon_y[i]
+        
+        if (i > delay) {
+          Y[i] <- Y[i] + delta * X[i-delay]
+        }
+      }
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "VARheavy"){
+    ts_generate <- function(n, tsparams){
+      phi_x <- tsparams[1]; phi_y <- tsparams[2]; df_x <- tsparams[3]
+      df_y <- tsparams[4]; delta <- tsparams[5]; delay <- tsparams[6]
+      epsilon_x <- rt(n,df_x); X <- numeric(n); X[1] <- epsilon_x[1]
+      epsilon_y <- rt(n,df_y); Y <- numeric(n); Y[1] <- epsilon_y[1]
+      
+      for (i in 2:n){
+        X[i] <- phi_x * X[i-1] + epsilon_x[i]
+        
+        Y[i] <- phi_y * Y[i-1] + epsilon_y[i]
+        
+        if (i > delay) {
+          Y[i] <- Y[i] + delta * X[i-delay]
+        }
+      }
+      return(data.frame(X,Y))
+    }
+  }
+  
+  if (tstype == "GARCHVOL"){
+    ts_generate <- function(n, tsparams){
+      omega <- tsparams[1]; alpha <- tsparams[2]; beta <- tsparams[3]
+      theta_x <- tsparams[4]; theta_y <- tsparams[5]; delta <- tsparams[6]
+      delay <- tsparams[7]
+      
+      eta_x <- rnorm(n); eta_y <- rnorm(n)
+      sig_x <- numeric(n); sig_y <- numeric(n) # sig is sigma squared
+      eps_x <- numeric(n); eps_y <- numeric(n)
+      X <- numeric(n); Y <- numeric(n)
+      
+      sig_x[1] <- sig_y[1] <- omega / (1 - alpha - beta)
+      eps_x[1] <- sqrt(sig_x[1]) * eta_x[1]
+      eps_y[1] <- sqrt(sig_y[1]) * eta_y[1]
+      X[1] <- eps_x[1]
+      Y[1] <- eps_y[1]
+      
+      for (i in 2:n){
+        x_past <- if (i > delay) X[i - delay] else 0
+        
+        sig_x[i] <- omega + alpha * eps_x[i-1]^2 + beta * sig_x[i-1]
+        sig_y[i] <- omega + alpha * eps_y[i-1]^2 + beta * sig_y[i-1] +
+          delta * x_past^2
+        
+        eps_x[i] <- sqrt(sig_x[i]) * eta_x[i]
+        eps_y[i] <- sqrt(sig_y[i]) * eta_y[i]
+        X[i] <- eps_x[i] + theta_x * eps_x[i-1]
+        Y[i] <- eps_y[i] + theta_y * eps_y[i-1]
+      }
+      
+      return(data.frame(X, Y))
+    }
+  }
+  
+  if (tstype == "GARCHVOLheavy"){
+    ts_generate <- function(n, tsparams){
+      omega <- tsparams[1]; alpha <- tsparams[2]; beta <- tsparams[3]
+      theta_x <- tsparams[4]; theta_y <- tsparams[5]; delta <- tsparams[6]
+      df_x <- tsparams[7]; df_y <- tsparams[8]; delay <- tsparams[9]
+      
+      # normalise so the etas have unit variance
+      eta_x <- rt(n, df_x) * sqrt((df_x - 2) / df_x)
+      eta_y <- rt(n, df_y) * sqrt((df_y - 2) / df_y)
+      sig_x <- numeric(n); sig_y <- numeric(n)
+      eps_x <- numeric(n); eps_y <- numeric(n)
+      X <- numeric(n); Y <- numeric(n)
+      
+      sig_x[1] <- sig_y[1] <- omega / (1 - alpha - beta)
+      eps_x[1] <- sqrt(sig_x[1]) * eta_x[1]
+      eps_y[1] <- sqrt(sig_y[1]) * eta_y[1]
+      X[1] <- eps_x[1]
+      Y[1] <- eps_y[1]
+      
+      for (i in 2:n){
+        x_past <- if (i > delay) X[i - delay] else 0
+        
+        sig_x[i] <- omega + alpha * eps_x[i-1]^2 + beta * sig_x[i-1]
+        sig_y[i] <- omega + alpha * eps_y[i-1]^2 + beta * sig_y[i-1] +
+          delta * x_past^2
+        
+        eps_x[i] <- sqrt(sig_x[i]) * eta_x[i]
+        eps_y[i] <- sqrt(sig_y[i]) * eta_y[i]
+        X[i] <- eps_x[i] + theta_x * eps_x[i-1]
+        Y[i] <- eps_y[i] + theta_y * eps_y[i-1]
+      }
+      
+      return(data.frame(X, Y))
+    }
+  }
+  
+  if (tstype == "WNSQ"){
+    ts_generate <- function(n, tsparams){
+      delta <- tsparams[1]; delay <- tsparams[2]
+      X <- rnorm(n)
+      Y <- rnorm(n)
+      for (i in (delay + 1):n){
+        Y[i] <- Y[i] + delta * (X[i - delay]^2 - 1)
+      }
+      return(data.frame(X, Y))
+    }
+  }
+  
+  if (tstype == "WNSQheavy"){
+    ts_generate <- function(n, tsparams){
+      delta <- tsparams[1]; df_x <- tsparams[2]
+      df_y <- tsparams[3]; delay <- tsparams[4]
+      X <- rt(n, df_x) * sqrt((df_x - 2) / df_x)
+      Y <- rt(n, df_y) * sqrt((df_y - 2) / df_y)
+      for (i in (delay + 1):n){
+        Y[i] <- Y[i] + delta * (X[i - delay]^2 - 1)
+      }
+      return(data.frame(X, Y))
+    }
+  }
+  
+  
+  ##### ------  ------ #####
+  
+  # Every hypothesis test below returns list(p, obs, boot):
+  # p bootstrap or asymptotic p-value
+  # obs  the observed statistic on the unresampled data
+  # boot vector of B bootstrap statistics, or NULL if the test has none
+  
+  #Function for calculating the f_statistic outside of lmtest as it was far too slow due to calculating far too many metrics
+  #Pass D directly to evaluate on a set of regression rows that are already built
+  gc_fstat <- function(X = NULL, Y = NULL, p, delta = NULL, D = NULL) {
+    
+    if (is.null(D)) {
+      y_embed <- embed(Y, p + 1)
+      x_embed <- embed(X, p + 1)
+      D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+    }
+    
+    y_target <- D[, 1]
+    y_lags   <- D[, 2:(p + 1), drop = FALSE]
+    x_lags   <- D[, (p + 2):(2 * p + 1), drop = FALSE]
+    
+    if (!is.null(delta)) y_target <- drop(y_target - x_lags %*% delta)
+    
+    unrestricted <- lm.fit(x = cbind(1, y_lags, x_lags), y = y_target)
+    restricted   <- lm.fit(x = cbind(1, y_lags),         y = y_target)
+    
+    rss_u <- sum(unrestricted$residuals^2)
+    rss_r <- sum(restricted$residuals^2)
+    n <- length(y_target)
+    
+    ((rss_r - rss_u) / p) / (rss_u / (n - 2 * p - 1))
+  }
+  
+  #Moving block bootstrap function, ts is data, b is bootstrap repetitions and l is block length
+  MBB <- function(ts, b, l = BLOCK) {
+    n <- nrow(ts)
+    bootstrap_samples <- vector("list", b)
+    
+    blocks <- lapply(1:(n - l + 1), function(start) {
+      ts[start:(start + l - 1), , drop = FALSE]
+    })
+    
+    for (i in 1:b) {
+      sampled_blocks <- sample(blocks, size = ceiling(n / l), replace = TRUE)
+      resampled <- do.call(rbind, sampled_blocks)[1:n, , drop = FALSE]
+      bootstrap_samples[[i]] <- resampled
+    }
+    return(bootstrap_samples)
+  }
+  
+  #Shifted MBB hypothesis test
+  #
+  # resample = "rows"  regression rows are formed from data before resampling
+  # resample = "raw"   blocks are drawn from data and the  regression rows are by embedding
+  # center   = TRUE    the statistic is adjusted by the sample causalcoefficient estimated on the shifted data
+  # center   = FALSE   plain F statistic on the resampled shifted data
+  #
+  #The observed statistic and the shifted series are identical across all four,
+  #so any difference in the resulting p-value is due to these two choices alone
+  shifted_MBB_p <- function(ts, b, lag, shift,
+                            resample = c("rows", "raw"), center = TRUE) {
+    resample <- match.arg(resample)
+    
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    
+    # shifting stage, change Y to Y' for null hypothesis
+    Y_prime <- c(tail(ts$Y, shift), head(ts$Y, -shift))
+    
+    # design rows on the shifted series, used for the centring coefficient and,
+    # when resample = "rows", as the objects that get resampled
+    y_embed <- embed(Y_prime, lag + 1)
+    x_embed <- embed(ts$X, lag + 1)
+    D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+    
+    # sample causal coefficient on the shifted design
+    delta_hat_Y_prime <- NULL
+    if (center) {
+      cf <- lm.fit(x = cbind(1, D[, 2:(lag + 1), drop = FALSE],
+                             D[, (lag + 2):(2 * lag + 1), drop = FALSE]),
+                   y = D[, 1])$coefficients
+      delta_hat_Y_prime <- cf[(lag + 2):(2 * lag + 1)]
+    }
+    
+    boot_stats <- numeric(b)
+    
+    if (resample == "rows") {
+      # resample whole regression rows, evaluate the statistic on each
+      bootstrap_list <- MBB(D, b)
+      for (i in 1:b) {
+        boot_stats[i] <- gc_fstat(p = lag, delta = delta_hat_Y_prime,
+                                  D = bootstrap_list[[i]])
+      }
+    } else {
+      # naive, resample the raw shifted pair and re-embed each time
+      raw <- cbind(X = ts$X, Y = Y_prime)
+      bootstrap_list <- MBB(raw, b)
+      for (i in 1:b) {
+        bs <- bootstrap_list[[i]]
+        boot_stats[i] <- gc_fstat(X = bs[, 1], Y = bs[, 2], p = lag,
+                                  delta = delta_hat_Y_prime)
+      }
+    }
+    
+    list(p = mean(boot_stats >= obs_stat), obs = obs_stat, boot = boot_stats)
+  }
+  
+  #MBB hypothesis test - flawed as it doesn't break causality when constructing the null, however can give spurious good results. not included in the report
+  MBB_p <- function(ts, b, lag) {
+    
+    #observed granger test
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    
+    #no shift
+    ts_null <- ts
+    
+    #generates mbb samples on null
+    bootstrap_list <- MBB(as.matrix(ts_null), b)
+    
+    #Calculates f stat on each bootstrapped sample
+    boot_stats <- numeric(b)
+    for (i in 1:b) {
+      boot_df <- as.data.frame(bootstrap_list[[i]])
+      colnames(boot_df) <- c("X", "Y")
+      
+      boot_stats[i] <- gc_fstat(boot_df$X, boot_df$Y, lag)
+    }
+    
+    list(p = mean(boot_stats >= obs_stat), obs = obs_stat, boot = boot_stats)
+  }
+  
+  #AR sieve 
+  AR_p <- function(ts, b, lag){
+    n <- nrow(ts)
+    
+    #Set the maximum AR length to be a function of time series length, it is important that this -> infty as n ->infty
+    max_p <- floor(10 * log10(n))
+    
+    #observed granger test
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    
+    #AR sieve - fit AR model
+    mod_null <- ar(ts$Y, method = "ols", aic = TRUE, order.max = max_p)
+    p_opt <- mod_null$order
+    y_mean <- mod_null$x.mean
+    ar_coefs <- mod_null$ar
+    
+    #center residuals
+    res_null <- na.omit(mod_null$resid)
+    res_null <- res_null - mean(res_null)
+    
+    boot_stats <- numeric(b)
+    
+    for (i in 1:b) {
+      #bootstrap residuals
+      res_boot <- sample(res_null, size = n - p_opt, replace = TRUE)
+      
+      # reconstruct Y. was getting errors for smaller time series, so need to take into account when white noise is fitted
+      if (p_opt == 0) {
+        boot_df <- data.frame(
+          X = ts$X,
+          Y = res_boot + y_mean
+        )
+      } else {
+        Y_boot_core <- stats::filter(res_boot, filter = ar_coefs, method = "recursive", init = rev(ts$Y[1:p_opt] - y_mean))
+        
+        boot_df <- data.frame(
+          X = ts$X,
+          Y = c(ts$Y[1:p_opt], as.numeric(Y_boot_core) + y_mean)
+        )
+      }
+      # test bootstrapped data
+      boot_stats[i] <- gc_fstat(boot_df$X, boot_df$Y, lag)
+    }
+    
+    list(p = mean(boot_stats >= obs_stat), obs = obs_stat, boot = boot_stats)
+  }
+  
+  #Classic asymptotic F test
+  asymp_p <- function(ts, lag) {
+    obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+    n <- length(ts$Y) - lag
+    list(p = pf(obs_stat, lag, n - 2 * lag - 1, lower.tail = FALSE),
+         obs = obs_stat, boot = NULL)
+  }
+  
+  #HC3 Wald
+  robust_gc_p <- function(X, Y, p) {
+    y_embed <- embed(Y, p + 1)
+    x_embed <- embed(X, p + 1)
+    
+    y_target <- y_embed[, 1]
+    y_lags <- y_embed[, -1, drop = FALSE]
+    x_lags <- x_embed[, -1, drop = FALSE]
+    
+    mod_u <- lm(y_target ~ y_lags + x_lags)
+    mod_r <- lm(y_target ~ y_lags)
+    
+    wald_res <- lmtest::waldtest(mod_u, mod_r, vcov = sandwich::vcovHC(mod_u, type = "HC3"))
+    list(p = wald_res$`Pr(>F)`[2], obs = wald_res$F[2], boot = NULL)
+  }
+  
+  #Toda-Yamamoto
+  ty_p <- function(X, Y, p, d_max = 1) {
+    y_embed <- embed(Y, p + d_max + 1)
+    x_embed <- embed(X, p + d_max + 1)
+    
+    y_target <- y_embed[, 1]
+    y_lags <- y_embed[, -1, drop = FALSE]
+    x_lags <- x_embed[, -1, drop = FALSE]
+    
+    unrestricted <- lm.fit(x = cbind(1, y_lags, x_lags), y = y_target)
+    
+    x_lags_restricted <- x_lags[, (p + 1):ncol(x_lags), drop = FALSE]
+    restricted <- lm.fit(x = cbind(1, y_lags, x_lags_restricted), y = y_target)
+    
+    rss_u <- sum(unrestricted$residuals^2)
+    rss_r <- sum(restricted$residuals^2)
+    n <- length(y_target)
+    k_u <- 1 + 2 * (p + d_max)
+    
+    fstat <- ((rss_r - rss_u) / p) / (rss_u / (n - k_u))
+    
+    list(p = pf(fstat, p, n - k_u, lower.tail = FALSE), obs = fstat, boot = NULL)
+  }
+  
+  
+  ##### ------  ------ #####
+  
+  ##### ------  Run tests on parallel compute ------ #####
+  # unless using a 24 core machine, slightly different results may be obtained. though due to large monte carlo samples it shouldn't differ too much.
+  n_cores <- detectCores() - 1
+  cl <- makeCluster(n_cores)
+  clusterSetRNGStream(cl, iseed = 1234)
+  
+  #export all functions and variables
+  clusterExport(cl, c(
+    "MBB", "shifted_MBB_p", "MBB_p", "AR_p", "gc_fstat", "asymp_p",
+    "robust_gc_p", "ty_p",
+    "ts_generate", "tsparams", "N_LENGTH", "B_BOOT", "LAG", "LAG_SELECT",
+    "SHIFT", "BLOCK",
+    "ASYMPTOTIC_TEST", "MBB_TEST", "AR_TEST", "ROBUST_TEST", "TY_TEST",
+    "SMBB_ROW_CEN", "SMBB_ROW_UNC", "SMBB_RAW_CEN", "SMBB_RAW_UNC"
+  ), envir = environment())
+  #export dependencies
+  clusterEvalQ(cl, {
+    library(lmtest)
+    library(sandwich)
+    library(vars)
+  })
+  
+  
+  #run!
+  results <- parLapply(cl, 1:N_SIM, function(sim) {
+    dat <- ts_generate(N_LENGTH, tsparams)
+    dat_rev <- data.frame(X = dat$Y, Y = dat$X) 
+    
+    res <- list()
+    
+    #either AIC or input for lag p
+    lag_sim <- if (LAG_SELECT) {
+      as.integer(VARselect(dat, lag.max = 10, type = "const")$selection[1])
+    } else {
+      as.integer(LAG)
+    }
+    res$lag <- lag_sim
+    
+    if (ASYMPTOTIC_TEST) {
+      res$xy_asymp <- asymp_p(dat,     lag_sim)
+      res$yx_asymp <- asymp_p(dat_rev, lag_sim)
+    }
+    
+    if (SMBB_ROW_CEN) {
+      res$xy_smbb <- shifted_MBB_p(dat,     b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                   resample = "rows", center = TRUE)
+      res$yx_smbb <- shifted_MBB_p(dat_rev, b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                   resample = "rows", center = TRUE)}
+    
+    if (SMBB_ROW_UNC) {
+      res$xy_smbbu <- shifted_MBB_p(dat,     b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                    resample = "rows", center = FALSE)
+      res$yx_smbbu <- shifted_MBB_p(dat_rev, b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                    resample = "rows", center = FALSE)}
+    
+    if (SMBB_RAW_CEN) {
+      res$xy_smbbraw <- shifted_MBB_p(dat,     b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                      resample = "raw", center = TRUE)
+      res$yx_smbbraw <- shifted_MBB_p(dat_rev, b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                      resample = "raw", center = TRUE)
+    }
+    
+    if (SMBB_RAW_UNC) {
+      res$xy_smbbrawu <- shifted_MBB_p(dat,     b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                       resample = "raw", center = FALSE)
+      res$yx_smbbrawu <- shifted_MBB_p(dat_rev, b = B_BOOT, lag = lag_sim, shift = SHIFT,
+                                       resample = "raw", center = FALSE)
+    }
+    
+    if (MBB_TEST) {
+      res$xy_mbb <- MBB_p(dat,     b = B_BOOT, lag = lag_sim)
+      res$yx_mbb <- MBB_p(dat_rev, b = B_BOOT, lag = lag_sim)
+    }
+    
+    if (AR_TEST) {
+      res$xy_ar <- AR_p(dat,     b = B_BOOT, lag = lag_sim)
+      res$yx_ar <- AR_p(dat_rev, b = B_BOOT, lag = lag_sim)
+    }
+    
+    if (ROBUST_TEST) {
+      res$xy_robust <- robust_gc_p(dat$X,     dat$Y,     lag_sim)
+      res$yx_robust <- robust_gc_p(dat_rev$X, dat_rev$Y, lag_sim)
+    }
+    
+    if (TY_TEST){
+      res$xy_ty <- ty_p(dat$X,     dat$Y,     p = lag_sim, d_max = 1)
+      res$yx_ty <- ty_p(dat_rev$X, dat_rev$Y, p = lag_sim, d_max = 1)
+    }
+    
+    return(res)
+  })
+  stopCluster(cl)
+  
+  #extract results
+  
+  test_ids   <- c("smbb", "smbbu", "smbbraw", "smbbrawu",
+                  "mbb", "asymp", "ar", "robust", "ty")
+  test_names <- c("sMBB row cen", "sMBB row unc", "sMBB raw cen", "sMBB raw unc",
+                  "MBB", "F", "AR sieve", "R.Wald", "TY")
+  
+  #flattens into one vector, helps for futher computations
+  pull_scalar <- function(id, dir, field) {
+    nm <- paste0(dir, "_", id)
+    vapply(results, function(r) {
+      z <- r[[nm]]
+      if (is.null(z) || is.null(z[[field]])) NA_real_ else as.numeric(z[[field]])
+    }, numeric(1))
+  }
+  
+  # pull the B_BOOT bootstrap statistics across replications, N_SIM x B_BOOT
+  pull_boot <- function(id, dir) {
+    nm <- paste0(dir, "_", id)
+    v <- lapply(results, function(r) {
+      z <- r[[nm]]
+      if (is.null(z)) NULL else z$boot
+    })
+    if (all(vapply(v, is.null, logical(1)))) return(NULL)
+    do.call(rbind, v)
+  }
+  
+  metrics <- function(id) {
+    p_xy <- pull_scalar(id, "xy", "p")
+    p_yx <- pull_scalar(id, "yx", "p")
+    if (all(is.na(p_xy))) return(c(NA, NA))
+    c(mean(p_xy < 0.05, na.rm = TRUE), mean(p_yx < 0.05, na.rm = TRUE))
+  }
+  
+  rates <- t(vapply(test_ids, metrics, numeric(2)))
+  
+  outputtab <- data.frame(
+    X_to_Y = rates[, 1],
+    Y_to_X = rates[, 2],
+    row.names = test_names
+  )
+  
+  # remove non selected tests
+  outputtab <- outputtab[!is.na(outputtab$X_to_Y), , drop = FALSE]
+  
+  # observed statistics, one per replication
+  obs_out <- list()
+  for (id in test_ids) for (dir in c("xy", "yx")) {
+    o <- pull_scalar(id, dir, "obs")
+    if (!all(is.na(o))) obs_out[[paste0(dir, "_", id)]] <- o
+  }
+  
+  # bootstrap statistics, N_SIM x B_BOOT per bootstrap test
+  boot_out <- list()
+  for (id in test_ids) for (dir in c("xy", "yx")) {
+    bo <- pull_boot(id, dir)
+    if (!is.null(bo)) boot_out[[paste0(dir, "_", id)]] <- bo
+  }
+  
+  lag_used <- vapply(results, function(r) as.numeric(r$lag), numeric(1))
+  
+  return(list(
+    table  = outputtab,
+    obs    = obs_out,
+    boot   = boot_out,
+    lag    = lag_used,
+    params = list(tstype = if (is.character(tstype)) tstype else "custom",
+                  tsparams = tsparams, N_SIM = N_SIM, N_LENGTH = N_LENGTH,
+                  B_BOOT = B_BOOT, LAG = LAG, LAG_SELECT = LAG_SELECT,
+                  SHIFT = SHIFT, BLOCK = BLOCK,
+                  SMBB = c(row_cen = SMBB_ROW_CEN, row_unc = SMBB_ROW_UNC,
+                           raw_cen = SMBB_RAW_CEN, raw_unc = SMBB_RAW_UNC))
+  ))
+  
+  ##### ------ ------ #####
+}
+

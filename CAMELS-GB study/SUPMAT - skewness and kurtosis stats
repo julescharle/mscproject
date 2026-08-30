@@ -1,0 +1,22 @@
+library(moments)
+library(data.table)
+set.seed(1234)
+csvnames <- list.files(pattern = "\\.csv$")
+sampl <- sample(1:length(csvnames),1)
+dat <- read.csv(csvnames[])
+shape_stats <- data.table(
+  variable = c("rainfall", "flow", "log1p(rainfall)", "log1p(flow)"),
+  skewness = c(
+    skewness(dat[[RAIN_COL]], na.rm = TRUE),
+    skewness(dat[[FLOW_COL]], na.rm = TRUE),
+    skewness(log1p(dat[[RAIN_COL]]), na.rm = TRUE),
+    skewness(log1p(dat[[FLOW_COL]]), na.rm = TRUE)
+  ),
+  excess_kurtosis = c(
+    kurtosis(dat[[RAIN_COL]], na.rm = TRUE) - 3,
+    kurtosis(dat[[FLOW_COL]], na.rm = TRUE) - 3,
+    kurtosis(log1p(dat[[RAIN_COL]]), na.rm = TRUE) - 3,
+    kurtosis(log1p(dat[[FLOW_COL]]), na.rm = TRUE) - 3
+  )
+)
+print(shape_stats)

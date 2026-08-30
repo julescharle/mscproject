@@ -9,7 +9,6 @@ csvnames  <- list.files(pattern = FILE_PAT)
 gauge_ids <- as.numeric(sub(FILE_PAT, "\\1", csvnames))
 lag_matrix <- cbind(id = gauge_ids, lag = NA_real_)
 
-pb <- txtProgressBar(min = 0, max = length(csvnames), style = 3)
 for (i in seq_along(csvnames)) {
   d  <- na.omit(read.csv(csvnames[i])[, c(DATE_COL, COLS)])
   tt <- as.numeric(as.Date(d[[1]]))
@@ -17,9 +16,7 @@ for (i in seq_along(csvnames)) {
     cbind(sin(2 * pi * k * tt / 365.25), cos(2 * pi * k * tt / 365.25))))
   XY <- cbind(X = residuals(lm(d[[2]] ~ H)), Y = residuals(lm(d[[3]] ~ H)))
   lag_matrix[i, 2] <- VARselect(XY, lag.max = 20, type = "const")$selection[1]
-  setTxtProgressBar(pb, i)
 }
-close(pb)
 
 table(lag_matrix[, 2])
 

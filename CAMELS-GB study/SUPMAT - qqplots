@@ -1,0 +1,18 @@
+library(data.table)
+
+files <- list.files(full.names = TRUE)
+
+dat <- rbindlist(lapply(files, fread, select = c(2, 6),
+                        col.names = c("rainfall", "flow")))
+
+dat[, rainfall := as.numeric(rainfall)]
+dat[, flow     := as.numeric(flow)]
+
+set.seed(1234)
+samp <- dat[sample(.N, min(5e5, .N))]
+
+par(mfrow = c(2, 2))
+qqnorm(samp$rainfall, main = "Rainfall"); qqline(samp$rainfall, col = "red")
+qqnorm(samp$flow, main = "Flow"); qqline(samp$flow, col = "red")
+qqnorm(log1p(samp$rainfall), main = "log(Rainfall)"); qqline(log1p(samp$rainfall), col = "red")
+qqnorm(log1p(samp$flow), main = "log(Flow)"); qqline(log1p(samp$flow), col = "red")

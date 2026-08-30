@@ -1,0 +1,53 @@
+library(ggplot2)
+
+FAM_LABS <- c(WN       = "Model 1", WNTWO    = "Model 2", WNSQ  = "Model 3", VAR = "Model 4",
+              MA       = "Model 5", GARCH    = "Model 6", GARCHVOL = "Model 7")
+
+NOISE_LABS <- c(light = "Gaussian", heavy = "heavy")
+
+dat <- do.call(rbind, lapply(names(runs), function(m) {
+  d <- do.call(rbind, lapply(names(dir_labs), function(dd)
+    f_dens(runs[[m]], "smbb", dd, LAG_KEEP, 0.995, 256)))
+  d$family <- sub("heavy$", "", m)
+  d$noise  <- if (grepl("heavy$", m)) "heavy" else "light"
+  d
+}))
+
+dat$family    <- factor(dat$family, levels = names(FAM_LABS), labels = unname(FAM_LABS))
+dat$noise     <- factor(dat$noise, levels = names(NOISE_LABS), labels = NOISE_LABS)
+dat$direction <- factor(dat$direction, levels = unname(dir_labs))
+dat$statistic <- factor(dat$statistic, levels = c("bootstrap", "observed"))
+
+cols <- paste(rep(levels(dat$noise), each = nlevels(dat$direction)),
+              levels(dat$direction), sep = " | ")
+dat$col   <- factor(paste(dat$noise, dat$direction, sep = " | "), levels = cols)
+dat$panel <- factor(paste(dat$family, dat$col, sep = " | "),
+                    levels = paste(rep(unname(FAM_LABS), each = length(cols)),
+                                   cols, sep = " | "))
+
+p_grid <- ggplot(dat, aes(F, dens, colour = statistic)) +
+  geom_line(linewidth = 0.3) +
+  facet_wrap(~ panel, ncol = length(cols), scales = "free", drop = FALSE) +
+  scale_x_continuous(breaks = scales::breaks_pretty(3),
+                     expand = expansion(mult = 0.02)) +
+  scale_y_continuous(breaks = scales::breaks_pretty(3),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "F statistic", y = "Density", title = unname(test_lab["smbb"])) +
+  theme_bw(base_size = 7) +
+  theme(legend.title      = element_blank(),
+        legend.position   = "bottom",
+        legend.margin     = margin(t = -4),
+        legend.key.height = unit(8, "pt"),
+        legend.key.width  = unit(16, "pt"),
+        panel.grid.minor  = element_blank(),
+        panel.grid.major  = element_line(linewidth = 0.15),
+        panel.border      = element_rect(linewidth = 0.3),
+        panel.spacing     = unit(3, "pt"),
+        strip.background  = element_blank(),
+        strip.text        = element_text(size = 5.5, margin = margin(b = 1.5)),
+        axis.text         = element_text(size = 5),
+        axis.ticks        = element_line(linewidth = 0.2),
+        plot.title        = element_text(size = 8, hjust = 0.5),
+        plot.margin       = margin(4, 6, 2, 4))
+
+print(p_grid)

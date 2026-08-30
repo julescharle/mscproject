@@ -1,0 +1,163 @@
+## 0.95 quantile of the shifted MBB bootstrap statistic, adjusted vs unadjusted.
+library(parallel); library(ggplot2)
+
+set.seed(1234)
+P <- 1; SHIFT <- 100; REPS <- 500; B_BOOT <- 200
+N_GRID <- c(200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400)
+TARGET <- qchisq(0.95, P) / P
+TSPARAMS <- c(0.5, 0.5, 0.5, 1)
+
+ts_generate <- function(n, tsparams){
+  phi_x <- tsparams[1]; phi_y <- tsparams[2]
+  delta <- tsparams[3]; delay <- tsparams[4]
+  epsilon_x <- rnorm(n); X <- numeric(n); X[1] <- epsilon_x[1]
+  epsilon_y <- rnorm(n); Y <- numeric(n); Y[1] <- epsilon_y[1]
+  
+  for (i in 2:n){
+    X[i] <- phi_x * X[i-1] + epsilon_x[i]
+    
+    Y[i] <- phi_y * Y[i-1] + epsilon_y[i]
+    
+    if (i > delay) {
+      Y[i] <- Y[i] + delta * X[i-delay]
+    }
+  }
+  return(data.frame(X,Y))
+}
+
+gc_fstat <- function(X = NULL, Y = NULL, p, delta = NULL, D = NULL) {
+  
+  if (is.null(D)) {
+    y_embed <- embed(Y, p + 1)
+    x_embed <- embed(X, p + 1)
+    D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  }
+  
+  y_target <- D[, 1]
+  y_lags   <- D[, 2:(p + 1), drop = FALSE]
+  x_lags   <- D[, (p + 2):(2 * p + 1), drop = FALSE]
+  
+  if (!is.null(delta)) {
+    y_target <- drop(y_target - x_lags %*% delta)
+  }
+  
+  unrestricted <- lm.fit(
+    x = cbind(1, y_lags, x_lags),
+    y = y_target)
+  
+  restricted <- lm.fit(
+    x = cbind(1, y_lags),
+    y = y_target
+  )
+  
+  rss_u <- sum(unrestricted$residuals^2)
+  rss_r <- sum(restricted$residuals^2)
+  
+  n <- length(y_target)
+  
+  fstat <- ((rss_r - rss_u) / p) /
+    (rss_u / (n - 2*p - 1))
+  
+  return(fstat)
+}
+
+mbb_rows <- function(M, l) {
+  m  <- nrow(M)
+  nb <- ceiling(m / l)
+  starts <- sample.int(m - l + 1L, nb, replace = TRUE)
+  idx <- rep(starts, each = l) + rep(0:(l - 1L), times = nb)
+  M[idx[seq_len(m)], , drop = FALSE]
+}
+
+
+shifted_MBB_stats <- function(ts, b, lag, shift) {
+  
+  Y_prime <- c(tail(ts$Y, shift), head(ts$Y, -shift))
+  
+  y_embed <- embed(Y_prime, lag + 1)
+  x_embed <- embed(ts$X, lag + 1)
+  D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  
+  mod_null <- lm.fit(x = cbind(1, D[, 2:(lag + 1), drop = FALSE],
+                               D[, (lag + 2):(2 * lag + 1), drop = FALSE]),
+                     y = D[, 1])
+  delta_hat_Y_prime <- mod_null$coefficients[(lag + 2):(2 * lag + 1)]
+  
+  l <- floor(nrow(D)^(14/29))
+  
+  boot_stats <- matrix(NA_real_, b, 2,
+                       dimnames = list(NULL, c("unadjusted", "adjusted")))
+  for (i in 1:b) {
+    Db <- mbb_rows(D, l)
+    boot_stats[i, 1] <- gc_fstat(p = lag, delta = NULL,              D = Db)
+    boot_stats[i, 2] <- gc_fstat(p = lag, delta = delta_hat_Y_prime, D = Db)
+  }
+  return(boot_stats)
+}
+
+SCEN <- list("Granger causality" = FALSE,
+             "Granger non-causality" = TRUE)
+
+one_rep <- function(n, swap) {
+  d <- ts_generate(n, TSPARAMS)
+  if (swap) d <- data.frame(X = d$Y, Y = d$X)
+  shifted_MBB_stats(d, b = B_BOOT, lag = P, shift = SHIFT)
+}
+
+cl <- makeCluster(13)
+clusterSetRNGStream(cl, iseed = 1234)
+clusterExport(cl, c("ts_generate", "gc_fstat", "mbb_rows", "shifted_MBB_stats",
+                    "one_rep", "TSPARAMS", "P", "SHIFT", "B_BOOT", "N_GRID"))
+
+qq_draws <- do.call(rbind, parLapply(cl, 1:REPS, function(i) one_rep(max(N_GRID), FALSE)))
+
+q95 <- function(x) quantile(x, 0.95, names = FALSE)
+summarise_n <- function(n, swap) {
+  force(n); force(swap)
+  reps <- parLapply(cl, 1:REPS, function(i) one_rep(n, swap))
+  data.frame(
+    statistic = c("unadjusted", "adjusted"),
+    q         = apply(do.call(rbind, reps), 2, q95))
+}
+
+res <- do.call(rbind, lapply(names(SCEN), function(nm)
+  do.call(rbind, lapply(N_GRID, function(n) {
+    out <- summarise_n(n, SCEN[[nm]])
+    message(nm, " n=", n, " done")
+    cbind(scenario = nm, n = n, out)
+  }))))
+stopCluster(cl)
+
+ggplot(res, aes(n, q, colour = statistic)) +
+  geom_hline(yintercept = c(TARGET, 2 * TARGET), linetype = "dashed",
+             colour = "grey40") +
+  geom_line() + geom_point(size = 2) +
+  facet_wrap(~ scenario) +
+  scale_x_continuous(trans = "log2", breaks = N_GRID) +
+  labs(x = "n", y = "0.95 quantile") +
+  theme_bw(base_size = 9) +
+  theme(legend.title = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "bottom")
+
+pr <- ppoints(2000)
+qq <- data.frame(
+  theoretical = qchisq(pr, P) / P,
+  unadjusted  = quantile(qq_draws[, 1], pr, names = FALSE),
+  adjusted    = quantile(qq_draws[, 2], pr, names = FALSE))
+
+qq_long <- reshape(qq, direction = "long",
+                   varying = c("adjusted", "unadjusted"),
+                   v.names = "sample", timevar = "statistic",
+                   times = c("adjusted", "unadjusted"), idvar = "theoretical")
+
+ggplot(qq_long, aes(theoretical, sample, colour = statistic)) +
+  geom_abline(slope = c(1, 2), linetype = "dashed", colour = "grey40") +
+  geom_line() +
+  labs(x = expression(chi[p]^2/p~quantile), y = "Bootstrap quantile") +
+  theme_bw(base_size = 9) +
+  theme(legend.title = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "bottom")

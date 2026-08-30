@@ -1,0 +1,65 @@
+library(tseries)
+library(zoo)
+library(forecast)
+library(ggplot2)
+library(gridExtra)
+
+set.seed(1234)
+
+output_dir <- "C:/Users/jules/OneDrive/Desktop"
+csvnames <- list.files(pattern = "\\.csv$")
+sampl <- sample(1:length(csvnames), 6)
+FLOW_COL <- "discharge_vol"
+RAIN_COL <- "precipitation"
+
+for (i in sampl) {
+
+  file_name <- csvnames[i]
+  dat <- read.csv(file_name)
+
+  flow <- na.omit(dat[[FLOW_COL]])
+  rainfall <- na.omit(dat[[RAIN_COL]])
+
+  print(adf.test(flow))
+  print(adf.test(rainfall))
+
+  p_acf_rainfall <- ggAcf(rainfall, lag.max = 720) + theme_minimal()
+  p_acf_flow     <- ggAcf(flow, lag.max = 720) + theme_minimal()
+
+  roll_mean_rain <- rollapply(rainfall, width = 30, mean, fill = NA)
+  roll_sd_rain   <- rollapply(rainfall, width = 30, sd, fill = NA)
+  df_rain <- data.frame(roll_mean = roll_mean_rain, roll_sd = roll_sd_rain)
+
+  p_sd_rainfall <- ggplot(df_rain, aes(x = roll_mean, y = roll_sd)) +
+    geom_point() +
+    labs(x = "30 day rolling mean", y = "30 day rolling SD") +
+    theme_minimal()
+
+  roll_mean_flow <- rollapply(flow, width = 30, mean, fill = NA)
+  roll_sd_flow   <- rollapply(flow, width = 30, sd, fill = NA)
+  df_flow <- data.frame(roll_mean = roll_mean_flow, roll_sd = roll_sd_flow)
+
+  p_sd_flow <- ggplot(df_flow, aes(x = roll_mean, y = roll_sd)) +
+    geom_point() +
+    labs(x = "30 day rolling mean", y = "30 day rolling SD") +
+    theme_minimal()
+
+  log_rainfall <- log(rainfall + 1)
+  stl_rain <- stl(ts(log_rainfall, frequency = 365), s.window = "periodic")
+  resid_rainfall <- as.numeric(stl_rain$time.series[, "remainder"])
+  print(Box.test(resid_rainfall^2, lag = 10, type = "Ljung-Box"))
+
+  log_flow <- log(flow + 1)
+  stl_flow <- stl(ts(log_flow, frequency = 365), s.window = "periodic")
+  resid_flow <- as.numeric(stl_flow$time.series[, "remainder"])
+  print(Box.test(resid_flow^2, lag = 10, type = "Ljung-Box"))
+
+  out_file <- file.path(
+    output_dir,
+    paste0("diagnostics_", tools::file_path_sans_ext(file_name), ".png")
+  )
+
+  png(out_file, width = 11, height = 8.5, units = "in", res = 300)
+  grid.arrange(p_acf_rainfall, p_acf_flow, p_sd_rainfall, p_sd_flow, ncol = 2)
+  dev.off()
+}

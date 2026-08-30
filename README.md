@@ -1,6 +1,7 @@
 This repository contains R code for reproducing the simulation study and empirical study for the MSc project _Shifted Moving Block Bootstrap for Granger Causality Testing_.
 
 **Folders**:
+
 Simulation study:
 * Power plots - Figures 2,7,8
 * QQ plot + 0.95 quantile convergence plot --- Figures 3,4

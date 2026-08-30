@@ -1,0 +1,30 @@
+library(lmtest)
+library(vars)
+library(forecast)
+library(sandwich)
+
+COLS <- c(2, 6); DATE_COL <- 1; K_HARM <- 2
+FILE_PAT  <- "^CAMELS_GB_hydromet_timeseries_([0-9]+)_.*\\.csv$"
+csvnames  <- list.files(pattern = FILE_PAT)
+gauge_ids <- as.numeric(sub(FILE_PAT, "\\1", csvnames))
+lag_matrix <- cbind(id = gauge_ids, lag = NA_real_)
+
+pb <- txtProgressBar(min = 0, max = length(csvnames), style = 3)
+for (i in seq_along(csvnames)) {
+  d  <- na.omit(read.csv(csvnames[i])[, c(DATE_COL, COLS)])
+  tt <- as.numeric(as.Date(d[[1]]))
+  H  <- do.call(cbind, lapply(1:K_HARM, function(k)
+    cbind(sin(2 * pi * k * tt / 365.25), cos(2 * pi * k * tt / 365.25))))
+  XY <- cbind(X = residuals(lm(d[[2]] ~ H)), Y = residuals(lm(d[[3]] ~ H)))
+  lag_matrix[i, 2] <- VARselect(XY, lag.max = 20, type = "const")$selection[1]
+  setTxtProgressBar(pb, i)
+}
+close(pb)
+
+table(lag_matrix[, 2])
+
+ggplot(data.frame(value = lag_matrix[, 2]), aes(x = value)) +
+  geom_histogram(fill = "grey80", colour = "black", bins = 15) +
+  labs(x = "Value", y = "Frequency") +
+  theme_bw(base_size = 9) +
+  theme(panel.grid.minor = element_blank())

@@ -1,0 +1,139 @@
+# Power of the shifted MBB test, adjusted vs unadjusted, one panel per lag.
+# Change params to generate the supmat plots
+library(parallel); library(ggplot2)
+
+N_SIM <- 500; N_LENGTH <- 1000; B_BOOT <- 200; SHIFT <- 100; ALPHA <- 0.05
+LAG_GRID <- c(3, 5, 7); PHI_GRID <- c(0.04, 0.08, 0.12, 0.16)
+tsparams_of <- function(phi, lag) c(0.5, 0.5, phi, lag)   # phi_x, phi_y, phi, lag
+
+ts_generate <- function(n, tsparams){
+  phi_x <- tsparams[1]; phi_y <- tsparams[2];
+  phi <- tsparams[3]; lag <- tsparams[4]
+  epsilon_x <- rnorm(n); X <- numeric(n); X[1] <- epsilon_x[1]
+  epsilon_y <- rnorm(n); Y <- numeric(n); Y[1] <- epsilon_y[1]
+  
+  for (i in 2:n){
+    X[i] <- phi_x * X[i-1] + epsilon_x[i]
+    
+    Y[i] <- phi_y * Y[i-1] + epsilon_y[i]
+    
+    if (i > lag) {
+      Y[i] <- Y[i] + phi * X[i-lag]
+    }
+  }
+  return(data.frame(X,Y))
+}
+
+gc_fstat <- function(X = NULL, Y = NULL, p, delta = NULL, D = NULL) {
+  
+  if (is.null(D)) {
+    y_embed <- embed(Y, p + 1)
+    x_embed <- embed(X, p + 1)
+    D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  }
+  
+  y_target <- D[, 1]
+  y_lags   <- D[, 2:(p + 1), drop = FALSE]
+  x_lags   <- D[, (p + 2):(2 * p + 1), drop = FALSE]
+  
+
+  if (!is.null(delta)) {
+    y_target <- drop(y_target - x_lags %*% delta)
+  }
+  
+  unrestricted <- lm.fit(
+    x = cbind(1, y_lags, x_lags),
+    y = y_target)
+  
+  restricted <- lm.fit(
+    x = cbind(1, y_lags),
+    y = y_target
+  )
+  
+  rss_u <- sum(unrestricted$residuals^2)
+  rss_r <- sum(restricted$residuals^2)
+  
+  n <- length(y_target)
+  
+  fstat <- ((rss_r - rss_u) / p) /
+    (rss_u / (n - 2*p - 1))
+  
+  return(fstat)
+}
+
+MBB <- function(ts, b, l = floor(N_LENGTH^(4/9))) {
+  n <- nrow(ts)
+  bootstrap_samples <- vector("list", b)
+  
+  blocks <- lapply(1:(n - l + 1), function(start) {
+    ts[start:(start + l - 1), , drop = FALSE]
+  })
+  
+  for (i in 1:b) {
+    sampled_blocks <- sample(blocks, size = ceiling(n / l), replace = TRUE)
+    resampled <- do.call(rbind, sampled_blocks)[1:n, , drop = FALSE]
+    bootstrap_samples[[i]] <- resampled
+  }
+  return(bootstrap_samples)
+}
+
+shifted_MBB_p <- function(ts, b, lag, shift) {
+  obs_stat <- gc_fstat(ts$X, ts$Y, lag)
+  
+  Y_prime <- c(tail(ts$Y, shift), head(ts$Y, -shift))
+  y_embed <- embed(Y_prime, lag + 1)
+  x_embed <- embed(ts$X, lag + 1)
+  D <- cbind(y_embed[, 1], y_embed[, -1, drop = FALSE], x_embed[, -1, drop = FALSE])
+  
+  # sample causal coefficient on the shifted design
+  mod_null <- lm.fit(x = cbind(1, D[, 2:(lag + 1), drop = FALSE],
+                               D[, (lag + 2):(2 * lag + 1), drop = FALSE]),
+                     y = D[, 1])
+  delta_hat_Y_prime <- mod_null$coefficients[(lag + 2):(2 * lag + 1)]
+  
+  # resample whole design rows
+  bootstrap_list <- MBB(D, b)
+  
+  boot_adj <- numeric(b); boot_una <- numeric(b)
+  for (i in 1:b) {
+    Db <- bootstrap_list[[i]]
+    boot_adj[i] <- gc_fstat(p = lag, delta = delta_hat_Y_prime, D = Db)
+    boot_una[i] <- gc_fstat(p = lag, delta = NULL,              D = Db)
+  }
+  
+  c(adjusted   = mean(boot_adj >= obs_stat),
+    unadjusted = mean(boot_una >= obs_stat))
+}
+
+
+cl <- makeCluster(13)
+clusterSetRNGStream(cl, iseed = 1234)
+clusterExport(cl, c("ts_generate", "gc_fstat", "MBB", "shifted_MBB_p",
+                    "N_LENGTH", "B_BOOT", "SHIFT", "tsparams_of"))
+
+rej <- function(lag, phi) {
+  pv <- parSapply(cl, 1:N_SIM, function(sim) {
+    dat <- ts_generate(N_LENGTH, tsparams_of(phi, lag))
+    shifted_MBB_p(dat, b = B_BOOT, lag = lag, shift = SHIFT)
+  })
+  rowMeans(pv < ALPHA)
+}
+
+grid  <- expand.grid(lag = LAG_GRID, phi = PHI_GRID)
+power <- cbind(grid, t(mapply(rej, grid$lag, grid$phi)))
+stopCluster(cl)
+
+long <- reshape(power, direction = "long", varying = c("adjusted", "unadjusted"),
+                v.names = "power", timevar = "statistic",
+                times = c("adjusted", "unadjusted"), idvar = c("lag", "phi"))
+
+ggplot(long, aes(phi, power, colour = statistic)) +
+  geom_line() + geom_point(size = 2) +
+  facet_wrap(~ lag, labeller = label_both) +
+  ylim(0, 1) +
+  labs(x = "Causal coefficient", y = "Power") +
+  theme_bw(base_size = 9) +
+  theme(legend.title = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "bottom")

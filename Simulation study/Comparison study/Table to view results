@@ -1,0 +1,34 @@
+test_names <- c("sMBB row cen", "sMBB row unc", "sMBB raw cen", "sMBB raw unc", "F", "R.Wald", "AR sieve", "TY")
+
+col_names <-  c("sMBB row cen", "sMBB row unc", "sMBB raw cen", "sMBB raw unc", "F", "R.Wald", "AR sieve", "TY")
+
+format_results <- function(std_run, heavy_run, base_name) {
+  res <- rbind(
+    std_run[test_names, "X_to_Y"],
+    std_run[test_names, "Y_to_X"],
+    heavy_run[test_names, "X_to_Y"],
+    heavy_run[test_names, "Y_to_X"]
+  )
+  colnames(res) <- col_names
+  rownames(res) <- c(
+    paste0(base_name, " (X->Y)"),
+    paste0(base_name, " (Y->X)"),
+    paste0(base_name, "heavy (X->Y)"),
+    paste0(base_name, "heavy (Y->X)")
+  )
+  return(as.data.frame(res))
+}
+
+
+rejection_rates_table <- rbind(
+  format_results(wn_run$table, wnheavy_run$table, "WN"),
+  format_results(wntwo_run$table, wntwoheavy_run$table, "WNTWO"),
+  format_results(garch_run$table, garchheavy_run$table, "GARCH"),
+  format_results(ma_run$table, maheavy_run$table, "MA"),
+  format_results(var_run$table, varheavy_run$table, "VAR"),
+  format_results(wnsq_run$table, wnsqheavy_run$table, "WNSQ"),
+  format_results(garchvol_run$table, garchvolheavy_run$table, "GARCHVOL")
+)
+
+
+print(rejection_rates_table)

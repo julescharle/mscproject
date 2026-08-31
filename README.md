@@ -1,6 +1,8 @@
 R code reproducing the simulation study and empirical study from the MSc project
 *Shifted Moving Block Bootstrap for Granger Causality Testing*.
 
+Tables and Figures numbered are to cross-reference from report.
+
 ### `Simulation study/`
 
 | File | Contents |

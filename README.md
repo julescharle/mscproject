@@ -1,21 +1,38 @@
-This repository contains R code for reproducing the simulation study and empirical study for the MSc project _Shifted Moving Block Bootstrap for Granger Causality Testing_.
+R code reproducing the simulation study and empirical study from the MSc project
+*Shifted Moving Block Bootstrap for Granger Causality Testing*.
 
-julescharle/mscproject/Simulation study:
-* Power plots - Figures 2,7,8
-* QQ plot + 0.95 quantile convergence plot           --- Figures 3,4
-* QQ naive vs regression row plot                    --- Figure 5
-* Comparison study/Simulation function               --- Main function for comparison study
-* Comparison study/Function run                      --- Uses cluster_runner function from Simulation function to create Tables 2,3
-* Comparison study/Results as R objects/             --- Folder containing outputs from Function run as .rds files
-* Comparison study/Table to view results             --- Useful code to output table from results in Function run
-* Comparison study/SUPMAT - boot f stat distribution --- Using results from Function run to create Figure 11
+### `Simulation study/`
 
-julescharle/mscproject/CAMELS-GB study:
-* Test evaluation function             --- Evaluated the rejections for each test on each station as detailed in report
-* pval_matrix.rds, pval_matrix.csv     --- Output of Test evaluation function
-* Rejection map plot                   --- Figures 6,15 & BH fdr rejections quoted in supmat
-* SUPMAT - skewness and kurtosis stats --- Table 6
-* SUPMAT - qqplots                     --- Figure 12
-* SUPMAT - acf plus variance plots     --- Figure 13
-* SUPMAT - AIC histogram               --- Figure 14
+| File | Contents |
+| --- | --- |
+| `Power plots.R` | Figures 2, 7, 8 |
+| `QQ plot + 0.95 quantile convergence plot.R` | Figures 3, 4 |
+| `QQ naive vs regression row plot.R` | Figure 5 |
 
+#### `Simulation study/Comparison study/`
+
+| File | Contents |
+| --- | --- |
+| `Simulation function.R` | Core simulation function: `cluster_runner()` |
+| `Function run.R` | Runs `cluster_runner()` to produce Tables 2, 3 |
+| `Results as R objects/` | Saved `.rds` outputs from `Function run.R` |
+| `Table to view results.R` | Formats the saved results into tables |
+| `SUPMAT - boot f stat distribution.R` | Figure 11 |
+
+### `CAMELS-GB study/`
+
+| File | Contents |
+| --- | --- |
+| `Test evaluation function.R` | Evaluates rejections for each test at each station |
+| `pval_matrix.rds`, `pval_matrix.csv` | Output of the above |
+| `Rejection map plot.R` | Figures 6, 15; BH FDR rejections quoted in the supplement |
+| `SUPMAT - skewness and kurtosis stats.R` | Table 6 |
+| `SUPMAT - qqplots.R` | Figure 12 |
+| `SUPMAT - acf plus variance plots.R` | Figure 13 |
+| `SUPMAT - AIC histogram.R` | Figure 14 |
+| Figures 7, 8 | `Simulation study/Power plots.R` |
+| Figure 11 | `Simulation study/Comparison study/SUPMAT - boot f stat distribution.R` |
+| Figures 12–14 | `CAMELS-GB study/SUPMAT - *.R` |
+| Figure 15 | `CAMELS-GB study/Rejection map plot.R` |
+| Tables 2, 3 | `Simulation study/Comparison study/Function run.R` |
+| Table 6 | `CAMELS-GB study/SUPMAT - skewness and kurtosis stats.R` |

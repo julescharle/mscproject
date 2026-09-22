@@ -32,3 +32,5 @@ Tables and Figures numbered are to cross-reference from report. Below are descri
 | `SUPMAT - qqplots.R` | Figure 12 |
 | `SUPMAT - acf plus variance plots.R` | Figure 13 |
 | `SUPMAT - AIC histogram.R` | Figure 14 |
+
+Report and presentation pdf files also included.
